@@ -1,7 +1,10 @@
 import FreeSimpleGUI as sg
 import json
 import os
+import queue
 import requests
+import threading
+import time
 from datetime import datetime
 from zipfile import ZipFile
 
@@ -58,6 +61,22 @@ def save_config(values):
         print(f"Error saving config: {e}")
 
 
+def upload_file(new_file_path, progress_queue):
+    """Handle file upload in a separate thread."""
+    headers = {"User-Agent": "ValheimSaveShareTool/1.0"}
+    try:
+        with open(new_file_path, "rb") as f:
+            response = requests.post(
+                "https://0x0.st",
+                files={"file": (new_file_path, f)},
+                data={"secret": new_file_path, "expires": 72},
+                headers=headers,
+            )
+        progress_queue.put(("complete", response))
+    except Exception as e:
+        progress_queue.put(("error", str(e)))
+
+
 def create_gui():
     config = load_config()
 
@@ -65,19 +84,19 @@ def create_gui():
         [sg.Text("Valheim Save Sharing Tool")],
         [
             sg.Text(".db file:"),
-            sg.Input(),
+            sg.Input(default_text=config['db_path']),
             sg.FileBrowse(file_types=(("DB File", "*.db"),)),
         ],
         [
             sg.Text(".fwl file:"),
-            sg.Input(),
+            sg.Input(default_text=config['fwl_path']),
             sg.FileBrowse(file_types=(("FWL File", "*.fwl"),)),
         ],
         [
             sg.Text("File tag (Optional)"),
-            sg.Input(),
+            sg.Input(default_text=config['file_tag']),
         ],
-        [sg.Checkbox("Retain local copy of .zip", default=True, key="-SAVE-")],
+        [sg.Checkbox("Retain local copy of .zip", default=config['save_local_copy'], key="-SAVE-")],
         [
             sg.Text(
                 "Note: Files will be uploaded to 0x0.st file hosting service. Limited to 512MB."
@@ -100,6 +119,17 @@ def create_gui():
 
             save_config(values)
 
+            if not db_path or not fwl_path:
+                sg.popup_error("Please select both .db and .fwl files.")
+                continue
+
+            try:
+                db_size = os.path.getsize(db_path)
+                fwl_size = os.path.getsize(fwl_path)
+            except OSError:
+                sg.popup_error("Error accessing selected files. Please verify the paths.")
+                continue
+
             db_size = os.path.getsize(db_path)
             fwl_size = os.path.getsize(fwl_path)
             total_size = db_size + fwl_size
@@ -115,19 +145,14 @@ def create_gui():
                 continue
 
             if db_path and fwl_path:
-                loading_window = sg.Window(
-                    "Processing",
-                    [
-                        [sg.Text("Creating and uploading savefile share...")],
-                        [
-                            sg.ProgressBar(
-                                100, orientation="h", size=(20, 20), key="-PROG-"
-                            )
-                        ],
-                    ],
-                    modal=True,
-                )
-                loading_event, _ = loading_window.read(timeout=0)
+                progress_layout = [
+                    [sg.Text("Creating and uploading savefile share...")],
+                    [sg.ProgressBar(100, orientation="h", size=(30, 20), key="-PROG-")],
+                    [sg.Text("", key="-STATUS-")]
+                ]
+                progress_window = sg.Window("Processing", progress_layout, modal=True, finalize=True)
+                progress_bar = progress_window["-PROG-"]
+                status_text = progress_window["-STATUS-"]
 
                 new_file_path = (
                     f"{file_tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
@@ -138,45 +163,97 @@ def create_gui():
 
                 headers = {"User-Agent": "ValheimSaveShareTool/1.0"}
                 with open(new_file_path, "rb") as f:
-                    response = requests.post(
-                        "https://0x0.st",
-                        files={"file": (new_file_path, f)},
-                        data={"secret": new_file_path, "expires": 72},
-                        headers=headers,
+                    progress_queue = queue.Queue()
+                    upload_thread = threading.Thread(
+                        target=upload_file,
+                        args=(new_file_path, progress_queue),
+                        daemon=True
                     )
-                    loading_window.close()
+                    upload_thread.start()
 
-                    if response.status_code == 200:
-                        url = response.text.strip()
-                        layout = [
-                            [sg.Text("Save file zip created and uploaded!")],
-                            [
-                                sg.Text("URL:"),
-                                sg.Input(url, key="-URL-", readonly=True),
-                                sg.Button("Copy URL"),
-                            ],
-                            [sg.Button("OK")],
-                        ]
-                        popup_window = sg.Window("Success", layout)
-                        while True:
-                            popup_event, _ = popup_window.read()
-                            if popup_event == "Copy URL":
-                                sg.clipboard_set(url)
-                                sg.popup_quick_message(
-                                    "URL copied to clipboard!", auto_close_duration=1
-                                )
-                            if popup_event in (sg.WIN_CLOSED, "OK"):
+                    # Animate progress bar while uploading
+                    current_progress = 0
+                    start_time = time.time()
+                    steps = [
+                        (0, "Creating ZIP file..."),
+                        (30, "Preparing upload..."),
+                        (50, "Uploading files..."),
+                        (80, "Finalizing upload..."),
+                        (95, "Almost done...")
+                    ]
+                    step_index = 0
+
+                    while True:
+                        try:
+                            # Check if upload is complete
+                            try:
+                                result = progress_queue.get_nowait()
+                                if result[0] == "complete":
+                                    response = result[1]
+                                    progress_window.close()
+                                    if response.status_code == 200:
+                                        url = response.text.strip()
+                                        layout = [
+                                            [sg.Text("Savefile zip created and uploaded!")],
+                                            [
+                                                sg.Text("URL:"),
+                                                sg.Input(url, key="-URL-", readonly=True),
+                                                sg.Button("Copy URL"),
+                                            ],
+                                            [sg.Button("OK")],
+                                        ]
+                                        popup_window = sg.Window("Success", layout)
+                                        while True:
+                                            popup_event, _ = popup_window.read()
+                                            if popup_event == "Copy URL":
+                                                sg.clipboard_set(url)
+                                                sg.popup_quick_message(
+                                                    "URL copied to clipboard!", auto_close_duration=1
+                                                )
+                                            if popup_event in (sg.WIN_CLOSED, "OK"):
+                                                break
+                                        popup_window.close()
+                                    else:
+                                        sg.popup(
+                                            f"Savefile share created but upload failed.\nStatus code: {response.status_code}"
+                                        )
+                                    break
+                                elif result[0] == "error":
+                                    progress_window.close()
+                                    sg.popup_error(f"Upload error: {result[1]}")
+                                    break
+                            except queue.Empty:
+                                pass
+
+                            # Update progress animation
+                            elapsed_time = time.time() - start_time
+                            if elapsed_time > 0.1 and step_index < len(steps):
+                                target_progress, status = steps[step_index]
+                                if current_progress < target_progress:
+                                    current_progress += 1
+                                    progress_bar.update(current_progress)
+                                    status_text.update(status)
+                                elif current_progress == target_progress:
+                                    step_index += 1
+                                start_time = time.time()
+
+                            progress_event, _ = progress_window.read(timeout=100)
+                            if progress_event == sg.WIN_CLOSED:
                                 break
-                        popup_window.close()
-                    else:
-                        sg.popup(
-                            f"Savefile share created but upload failed.\nStatus code: {response.status_code}"
-                        )
 
-                    if not save_local_copy:
-                        os.remove(new_file_path)
+                        except Exception as e:
+                            progress_window.close()
+                            sg.popup_error(f"Unexpected error: {str(e)}")
+                            break
 
-                window.close()
+                    if not save_local_copy and os.path.exists(new_file_path):
+                        try:
+                            os.remove(new_file_path)
+                        except Exception as e:
+                            print(f"Error removing temporary file: {e}")
+
+                    window.close()
+                    break
 
     window.close()
 
