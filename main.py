@@ -1,11 +1,66 @@
 import FreeSimpleGUI as sg
+import json
 import os
 import requests
 from datetime import datetime
 from zipfile import ZipFile
 
 
+def get_config_path():
+    """Get the path to the config file in the user's AppData directory."""
+    app_data = os.getenv('APPDATA') or os.path.expanduser('~')
+    config_dir = os.path.join(app_data, 'ValheimSaveShare')
+    if not os.path.exists(config_dir):
+        os.makedirs(config_dir)
+    return os.path.join(config_dir, 'config.json')
+
+
+def load_config():
+    """Load the configuration from file."""
+    config_path = get_config_path()
+    default_config = {
+        'db_path': '',
+        'fwl_path': '',
+        'file_tag': '',
+        'save_local_copy': True
+    }
+
+    try:
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                # Verify all paths still exist
+                if not os.path.exists(config.get('db_path', '')):
+                    config['db_path'] = ''
+                if not os.path.exists(config.get('fwl_path', '')):
+                    config['fwl_path'] = ''
+                return config
+    except Exception as e:
+        print(f"Error loading config: {e}")
+
+    return default_config
+
+
+def save_config(values):
+    """Save the configuration to file."""
+    config_path = get_config_path()
+    config = {
+        'db_path': values[0],
+        'fwl_path': values[1],
+        'file_tag': values[2],
+        'save_local_copy': values['-SAVE-']
+    }
+
+    try:
+        with open(config_path, 'w') as f:
+            json.dump(config, f)
+    except Exception as e:
+        print(f"Error saving config: {e}")
+
+
 def create_gui():
+    config = load_config()
+
     layout = [
         [sg.Text("Valheim Save Sharing Tool")],
         [
@@ -28,7 +83,7 @@ def create_gui():
                 "Note: Files will be uploaded to 0x0.st file hosting service. Limited to 512MB."
             )
         ],
-        [sg.Button("Create savefile zip"), sg.Button("Exit")],
+        [sg.Button("Share savefile"), sg.Button("Exit")],
     ]
 
     window = sg.Window("Valheim Save Sharing", layout)
@@ -37,11 +92,13 @@ def create_gui():
         event, values = window.read()
         if event == sg.WIN_CLOSED or event == "Exit":
             break
-        if event == "Create savefile zip":
+        if event == "Share savefile":
             db_path = values[0]
             fwl_path = values[1]
             file_tag = values[2] or "save"
             save_local_copy = values["-SAVE-"]
+
+            save_config(values)
 
             db_size = os.path.getsize(db_path)
             fwl_size = os.path.getsize(fwl_path)
