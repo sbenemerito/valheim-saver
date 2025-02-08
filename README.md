@@ -2,9 +2,15 @@
 
 A simple GUI tool that helps Valheim players share their world saves with other players, enabling them to host the world when the original host is unavailable.
 
+## Quick Start for Windows Users
+
+Simply download `ValheimSaveShare.exe` from the `dist` folder. No installation or Python required!
+
 ## Purpose
 
-This tool is designed to make it easy for Valheim players to share their world saves with friends. While it can be used for backups, its primary purpose is to allow multiple players to host the same world, ensuring gameplay can continue even when the original host is offline.
+This tool is designed to make it easy for Valheim players to share their world saves with friends. 
+
+I mainly wrote this on a whim because the steps to share Valheim savefiles with friends was getting quite repetetive. Its primary purpose is to allow multiple players to host the same world, ensuring gameplay can continue even when the original host is offline.
 
 ## Features
 
